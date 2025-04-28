@@ -1,0 +1,42 @@
+/* 自定义样式 */
+.dropdown-class {
+    width: 100%;
+    background-color: #f0f0f0;
+    border: 1px solid #ccc;
+    padding: 8px;
+}
+
+.input-class {
+    width: 100%;
+    padding: 10px;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+}
+
+.chatbot-class {
+    height: 400px;
+    overflow-y: scroll;
+    background-color: #f9f9f9;
+    border: 1px solid #ddd;
+    margin-bottom: 10px;
+}
+
+.submit-btn-class {
+    background-color: #4CAF50;
+    color: white;
+    padding: 10px 20px;
+}
+
+.clear-btn-class {
+    background-color: #f44336;
+    color: white;
+    padding: 10px 20px;
+}
+
+.image-input-class {
+    border: 2px dashed #ccc;
+}
+
+.image-output-class {
+    border: 2px solid #333;
+}
