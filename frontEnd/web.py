@@ -1,6 +1,6 @@
 import gradio as gr
 import ollama
-# from backEnd.bert.train import train_and_evaluate
+from backEnd.bert.train import evaluate_model
 from transformers import BertTokenizer, BertForSequenceClassification
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score
@@ -148,61 +148,16 @@ def chat_page():
     return gr.Column([model_dropdown, msg, chatbot, gr.Row(clear)])
 
 
-def evaluate_model_with_progress(dataset_name: str, num_labels: int =4 , output_dir: str = "./results", progress=None):
-    """
-    Evaluate a pre-trained BERT model for a given dataset and update the progress bar in real-time.
-    """
-    # 1. Load the dataset
-    dataset = load_dataset(dataset_name)
+# def evaluate_model_with_progress(model_name, dataset_name):
+#     """
+#     Evaluate a pre-trained BERT model for a given dataset and update the progress bar in real-time.
+#     """
+#     if model_name == "BERT":
+#        evaluate_model(dataset_name)
+#        return
+#     elif model_name == "GPT-2":
+#         exit()
 
-    # 2. Load the BERT tokenizer
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-
-    def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True)
-
-    test_dataset = dataset['test'].map(tokenize_function, batched=True)
-    test_dataset = test_dataset.remove_columns(["text"])
-    test_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
-
-    # 3. Load pre-trained BERT model
-    model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=num_labels)
-
-    # 4. Create the Trainer object for evaluation
-    training_args = TrainingArguments(
-        output_dir=output_dir,  # Output directory
-        per_device_eval_batch_size=8,  # Eval batch size per device
-    )
-
-    trainer = Trainer(
-        model=model,  # Model
-        args=training_args,  # Training arguments (we only need this for evaluation)
-        eval_dataset=test_dataset,  # Eval dataset
-        compute_metrics=lambda p: {"accuracy": accuracy_score(p.predictions.argmax(axis=-1), p.label_ids)},  # Accuracy metric
-    )
-
-    # 5. Evaluate the model with real-time progress update
-    total_samples = len(test_dataset)  # 总样本数
-    batch_size = 8  # 每批次大小
-    total_batches = total_samples // batch_size  # 总批次数
-
-    # 自定义进度更新回调函数
-    def progress_callback(batch_idx):
-        progress(batch_idx / total_batches)  # 每次调用更新进度条
-
-    # 评估过程：遍历数据集并计算进度
-    for i in range(total_batches):
-        # 进行一次评估
-        trainer.predict(test_dataset[i * batch_size:(i + 1) * batch_size])  # 模拟推理
-        progress_callback(i)  # 更新进度
-
-    # 最终评估
-    results = trainer.evaluate()
-    print(results)
-
-    # 返回准确率
-    accuracy = results["eval_accuracy"]
-    return f"Accuracy: {accuracy * 100:.2f}%"
 
 
 def other_page():
@@ -218,14 +173,14 @@ def other_page():
     dataset_dropdown = gr.Dropdown(datasets_options, label="选择数据集", value=datasets_options[0])
 
     # 结果显示框
-    result_output = gr.Textbox(label="评测结果", interactive=False, placeholder="评测结果将在此显示", lines=4)
+    result_output = gr.Textbox(label="评测结果", interactive=False, placeholder="评测结果将在此显示", lines=10)
 
     # 提交按钮
     submit_btn = gr.Button("提交")
 
     # 按钮点击后触发评测过程
     submit_btn.click(
-        fn=evaluate_model_with_progress,
+        fn=evaluate_model,
         inputs=[dataset_dropdown],  # 传递选定的模型和数据集
         outputs=result_output,  # 输出到结果框
     )
@@ -243,4 +198,4 @@ with gr.Blocks() as demo:
         other_page()
 
 # 启动 Gradio 界面
-demo.launch()
+demo.launch(debug=True)

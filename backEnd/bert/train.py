@@ -1,75 +1,160 @@
-import torch
+import sys
+import os
+import gradio as gr
+from io import StringIO
 from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from sklearn.metrics import accuracy_score
 
+# 定义一个类来捕获标准输出
+class ConsoleOutput:
+    def __init__(self):
+        self.output = StringIO()
+        self.old_stdout = sys.stdout
+        sys.stdout = self.output  # 重定向标准输出
 
-def train_and_evaluate(dataset_name: str, num_labels: int, output_dir: str = "./results"):
+    def get_output(self):
+        return self.output.getvalue()
+
+    def reset(self):
+        sys.stdout = self.old_stdout  # 恢复标准输出
+
+def evaluate_model(dataset_name: str, output_dir: str = "./results", local_data_dir: str = "./local_data"):
     """
-    Train and evaluate a BERT model for a given dataset.
-
-    Args:
-    - dataset_name (str): The name of the dataset to be used (e.g., "ag_news").
-    - num_labels (int): The number of classes in the dataset (e.g., 4 for "ag_news").
-    - output_dir (str): Directory to save results and model checkpoints.
-
-    Returns:
-    - results (dict): The evaluation results.yu8
+    Evaluate a pre-trained BERT model for a given dataset, using local cache if available.
+    This function will yield progress updates during execution.
     """
+    console_output = ConsoleOutput()  # 创建 ConsoleOutput 实例，捕捉控制台输出
+    try:
+        yield "Loading dataset..."
+        dataset_params = {
+            "ag_news": {"num_labels": 4, "text_field": "text"},
+            "imdb": {"num_labels": 2, "text_field": "text"},
+            "yelp_polarity": {"num_labels": 2, "text_field": "text"},
+        }
 
-    # 1. Load the dataset
-    dataset = load_dataset(dataset_name)
+        if dataset_name not in dataset_params:
+            yield f"Unsupported dataset: '{dataset_name}'. Supported: {list(dataset_params.keys())}"
+            return None
 
-    # 2. Load the BERT tokenizer
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        num_labels = dataset_params[dataset_name]["num_labels"]
+        text_field = dataset_params[dataset_name]["text_field"]
 
-    def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True)
+        # Create local data path
+        local_dataset_path = os.path.join(local_data_dir, dataset_name)
+        local_tokenizer_path = os.path.join(local_data_dir, "bert-base-uncased-tokenizer")
 
-    train_dataset = dataset['train'].map(tokenize_function, batched=True)
-    test_dataset = dataset['test'].map(tokenize_function, batched=True)
+        # Ensure local directories exist
+        os.makedirs(local_data_dir, exist_ok=True)
 
-    train_dataset = train_dataset.remove_columns(["text"])
-    test_dataset = test_dataset.remove_columns(["text"])
+        # 1. Load dataset (from cache if available)
+        if os.path.exists(local_dataset_path):
+            yield f"Loading dataset from local path: {local_dataset_path}"
+            dataset = load_from_disk(local_dataset_path)
+        else:
+            yield f"Downloading dataset: {dataset_name}"
+            try:
+                dataset = load_dataset(dataset_name)
+                yield f"Saving dataset to local path: {local_dataset_path}"
+                dataset.save_to_disk(local_dataset_path)
+            except Exception as e:
+                yield f"Error loading dataset '{dataset_name}': {e}"
+                return None
 
-    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+        # 2. Load tokenizer (from cache if available)
+        if os.path.exists(local_tokenizer_path):
+            yield f"Loading tokenizer from local path: {local_tokenizer_path}"
+            tokenizer = BertTokenizer.from_pretrained(local_tokenizer_path)
+        else:
+            yield "Downloading tokenizer: bert-base-uncased"
+            try:
+                tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+                yield f"Saving tokenizer to local path: {local_tokenizer_path}"
+                tokenizer.save_pretrained(local_tokenizer_path)
+            except Exception as e:
+                yield f"Error loading tokenizer: {e}"
+                return None
 
-    model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=num_labels)
+        # Tokenize function
+        def tokenize_function(examples):
+            return tokenizer(examples[text_field], padding="max_length", truncation=True)
 
-    training_args = TrainingArguments(
-        output_dir=output_dir,  # Output directory
-        num_train_epochs=3,  # Number of training epochs
-        per_device_train_batch_size=8,  # Train batch size per device
-        per_device_eval_batch_size=8,  # Eval batch size per device
-        warmup_steps=500,  # Warmup steps
-        weight_decay=0.01,  # Weight decay
-        logging_dir="./logs",  # Logging directory
-        logging_steps=10,  # Log every 10 steps
-        save_steps=500,  # Save checkpoint every 500 steps
-        save_total_limit=2,  # Keep the last 2 saved checkpoints
-    )
+        # Check for 'test' or 'validation' split
+        if 'test' not in dataset:
+            eval_split_name = 'validation' if 'validation' in dataset else None
+            if eval_split_name is None:
+                yield f"Error: Dataset '{dataset_name}' has no 'test' or 'validation' split for evaluation."
+                return None
+        else:
+            eval_split_name = 'test'
 
-    trainer = Trainer(
-        model=model,  # Model
-        args=training_args,  # Training arguments
-        train_dataset=train_dataset,  # Train dataset
-        eval_dataset=test_dataset,  # Eval dataset
-        compute_metrics=lambda p: {"accuracy": accuracy_score(p.predictions.argmax(axis=-1), p.label_ids)},
-        # Accuracy metric
-    )
+        try:
+            yield f"Tokenizing evaluation split: {eval_split_name}"
+            eval_dataset = dataset[eval_split_name].map(tokenize_function, batched=True)
+            eval_dataset = eval_dataset.remove_columns([text_field])
+            eval_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+        except Exception as e:
+            yield f"Error processing dataset: {e}"
+            return None
 
-    trainer.train()
+        # Load the model
+        try:
+            yield "Loading pre-trained model: bert-base-uncased"
+            model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=num_labels)
+        except Exception as e:
+            yield f"Error loading model: {e}"
+            return None
 
-    results = trainer.evaluate()
-    print(results)
+        # Evaluation setup
+        training_args = TrainingArguments(
+            output_dir=os.path.join(output_dir, dataset_name + "_eval"),
+            per_device_eval_batch_size=16,
+            report_to="none"
+        )
 
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            eval_dataset=eval_dataset,
+            compute_metrics=lambda p: {"accuracy": accuracy_score(p.predictions.argmax(axis=-1), p.label_ids)},
+            tokenizer=tokenizer
+        )
 
+        # Start evaluation
+        try:
+            yield "Starting evaluation..."
+            results = trainer.evaluate()
+            yield f"Evaluation finished. Results for {dataset_name}: {results}"
+            return results
+        except Exception as e:
+            yield f"Error during evaluation for {dataset_name}: {e}"
+            return None
+    finally:
+        # 在最终步骤中，捕获所有的控制台输出并显示在Gradio前端
+        output = console_output.get_output()
+        if output:
+            yield f"Captured Output:\n{output}"
+        console_output.reset()
 
-
-# Example of how to call the function:
+# --- 主执行块：依次评估指定的数据集 --- 
 if __name__ == "__main__":
-    dataset_name = "ag_news"  # You can change this to any other dataset
-    num_labels = 4  # AG News has 4 labels, adjust as needed for your dataset
-    output_dir = "./results"  # Folder to save the results and model
+    datasets_to_evaluate = ["ag_news", "imdb", "yelp_polarity"]
+    base_output_dir = "./results"
+    local_data_dir = "./local_cache"
+    all_results = {}
 
-    results = train_and_evaluate(dataset_name, num_labels, output_dir)
+    for ds_name in datasets_to_evaluate:
+        # num_labels 会在 evaluate_model 内部根据 ds_name 确定
+        eval_results = evaluate_model(
+            dataset_name=ds_name, 
+            output_dir=base_output_dir, 
+            local_data_dir=local_data_dir
+        )
+        if eval_results:
+            all_results[ds_name] = eval_results
+        else:
+            print(f"Skipping results for {ds_name} due to errors.")
+
+    print("\n--- All Evaluation Results ---")
+    for ds_name, res in all_results.items():
+        print(f"Dataset: {ds_name}, Accuracy: {res.get('eval_accuracy', 'N/A'):.4f}")
